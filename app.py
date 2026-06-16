@@ -192,6 +192,63 @@ ITEMS = [
 
 CHANNELS = ["THD", "VC", "SC", "DF", "other"]
 
+RESPONSIBLES = ["王小明", "林雅婷"]
+
+
+def month_short_label(month_text: str):
+    _, m = map(int, month_text.split("/"))
+    return f"{m}月"
+
+
+MONTH_COLOR_MARKS = ["🟦", "🟩", "🟨", "🟧", "🟪", "🟫", "⬛", "🟥", "🟦", "🟩", "🟨", "🟧"]
+
+
+@st.cache_data
+def create_forecast_data():
+    rows = []
+    options = month_options(date(2026, 6, 1), 12)
+
+    item_owner_map = {
+        item["料號"]: RESPONSIBLES[idx % len(RESPONSIBLES)]
+        for idx, item in enumerate(ITEMS)
+    }
+
+    for month_text in options:
+        start, end = month_start_end(month_text)
+
+        for idx, item in enumerate(ITEMS):
+            base = np.random.randint(120, 950)
+            season_factor = 1 + (options.index(month_text) * 0.025)
+            channel_qty = {
+                ch: int(max(0, np.random.normal(base / 5 * season_factor, base * 0.04)))
+                for ch in CHANNELS
+            }
+
+            monthly_ai = int(sum(channel_qty.values()) * np.random.uniform(0.85, 1.15))
+            monthly_buyer = int(monthly_ai * np.random.uniform(0.88, 1.18))
+            monthly_actual = int(monthly_buyer * np.random.uniform(0.8, 1.28))
+
+            rows.append(
+                {
+                    "月份": month_text,
+                    "日期": f"{start.strftime('%Y/%m/%d')} - {end.strftime('%Y/%m/%d')}",
+                    "負責人": item_owner_map[item["料號"]],
+                    "料件名稱": item["料件名稱"],
+                    "料號": item["料號"],
+                    "THD": channel_qty["THD"],
+                    "VC": channel_qty["VC"],
+                    "SC": channel_qty["SC"],
+                    "DF": channel_qty["DF"],
+                    "other": channel_qty["other"],
+                    "AI預測該月剩餘需求": monthly_ai,
+                    "採購人員預測該月剩餘需求": monthly_buyer,
+                    "實際銷售數據": monthly_actual,
+                }
+            )
+
+    df = pd.DataFrame(rows)
+    df["Variance"] = df["實際銷售數據"] / df["採購人員預測該月剩餘需求"] - 1
+    return df
 
 def month_options(start_month: date, months: int = 12):
     result = []
@@ -394,28 +451,79 @@ if page == "① 需求預測":
     st.markdown('<div class="section-header">① 需要採購的數量預測</div>', unsafe_allow_html=True)
 
     month_list = month_options(date(2026, 6, 1), 12)
-    selected_month = st.selectbox("選擇月份", month_list, index=0)
+    forecast_options = month_list + ["未來半年", "未來一年"]
 
-    range_start, range_end = display_range_for_month(selected_month)
+    filter_col1, filter_col2, filter_col3 = st.columns([2, 2, 1])
+
+    with filter_col1:
+        selected_period = st.selectbox("選擇月份", forecast_options, index=0)
+
+    with filter_col2:
+        owner_options = ["全部負責人"] + RESPONSIBLES
+        selected_owner = st.selectbox("負責人篩選", owner_options, index=0)
+
+    if "forecast_show_channels" not in st.session_state:
+        st.session_state["forecast_show_channels"] = False
+
+    with filter_col3:
+        st.write("")
+        if st.button(
+            "－ 隱藏通路" if st.session_state["forecast_show_channels"] else "＋ 展開通路",
+            use_container_width=True,
+        ):
+            st.session_state["forecast_show_channels"] = not st.session_state["forecast_show_channels"]
+            st.rerun()
+
+    if selected_period == "未來半年":
+        selected_months = month_list[:6]
+        range_start, _ = display_range_for_month(month_list[0])
+        _, range_end = display_range_for_month(month_list[5])
+        period_label = "未來半年"
+    elif selected_period == "未來一年":
+        selected_months = month_list[:12]
+        range_start, _ = display_range_for_month(month_list[0])
+        _, range_end = display_range_for_month(month_list[11])
+        period_label = "未來一年"
+    else:
+        selected_months = [selected_period]
+        range_start, range_end = display_range_for_month(selected_period)
+        period_label = selected_period
+
     st.markdown(
         f"""
         <span class="pill">目前日期：{TODAY.strftime('%Y/%m/%d')}</span>
         <span class="pill pill-green">查詢期間：{range_start.strftime('%Y/%m/%d')} - {range_end.strftime('%Y/%m/%d')}</span>
-        <span class="pill pill-orange">資料筆數：20 個料件</span>
+        <span class="pill pill-orange">查詢範圍：{period_label}</span>
+        <span class="pill">負責人：{selected_owner}</span>
         """,
         unsafe_allow_html=True,
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
     df = st.session_state["forecast_editor_df"].copy()
-    month_df = df[df["月份"] == selected_month].copy()
-    month_df["日期"] = f"{range_start.strftime('%Y/%m/%d')} - {range_end.strftime('%Y/%m/%d')}"
-    month_df["Variance"] = month_df["實際銷售數據"] / month_df["採購人員預測該月剩餘需求"] - 1
 
-    total_ai = int(month_df["AI預測該月剩餘需求"].sum())
-    total_buyer = int(month_df["採購人員預測該月剩餘需求"].sum())
-    total_actual = int(month_df["實際銷售數據"].sum())
-    avg_variance = month_df["Variance"].mean()
+    if "負責人" not in df.columns:
+        item_owner_map = {
+            item["料號"]: RESPONSIBLES[idx % len(RESPONSIBLES)]
+            for idx, item in enumerate(ITEMS)
+        }
+        df["負責人"] = df["料號"].map(item_owner_map)
+        st.session_state["forecast_editor_df"]["負責人"] = st.session_state["forecast_editor_df"]["料號"].map(item_owner_map)
+
+    period_df = df[df["月份"].isin(selected_months)].copy()
+
+    if selected_owner != "全部負責人":
+        period_df = period_df[period_df["負責人"] == selected_owner].copy()
+
+    period_df["Total"] = period_df[CHANNELS].sum(axis=1)
+    period_df["Variance"] = (
+        period_df["實際銷售數據"] / period_df["採購人員預測該月剩餘需求"] - 1
+    )
+
+    total_ai = int(period_df["AI預測該月剩餘需求"].sum())
+    total_buyer = int(period_df["採購人員預測該月剩餘需求"].sum())
+    total_actual = int(period_df["實際銷售數據"].sum())
+    avg_variance = period_df["Variance"].mean() if len(period_df) else 0
 
     c1, c2, c3, c4 = st.columns(4)
 
@@ -425,7 +533,7 @@ if page == "① 需求預測":
             <div class="metric-card">
                 <div class="metric-label">AI 預測剩餘需求</div>
                 <div class="metric-value">{total_ai:,}</div>
-                <div class="metric-note">本月剩餘區間合計</div>
+                <div class="metric-note">{period_label} 合計</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -470,12 +578,12 @@ if page == "① 需求預測":
 
     st.write("")
 
-    high_risk = month_df[month_df["Variance"].abs() >= 0.2]
+    high_risk = period_df[period_df["Variance"].abs() >= 0.2]
     if len(high_risk) > 0:
         st.markdown(
             f"""
             <div class="warning-box">
-                偵測到 {len(high_risk)} 個料件 Variance 超過 ±20%，建議採購重新檢查預測量或補貨節奏。
+                偵測到 {len(high_risk)} 筆料件月份 Variance 超過 ±20%，建議採購重新檢查預測量或補貨節奏。
             </div>
             """,
             unsafe_allow_html=True,
@@ -484,67 +592,204 @@ if page == "① 需求預測":
         st.markdown(
             """
             <div class="success-box">
-                本月料件預測差異皆在可控範圍內。
+                查詢期間料件預測差異皆在可控範圍內。
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    edit_cols = [
-        "日期",
-        "料件名稱",
-        "料號",
-        "THD",
-        "VC",
-        "SC",
-        "DF",
-        "other",
-        "AI預測該月剩餘需求",
-        "採購人員預測該月剩餘需求",
-        "實際銷售數據",
-        "Variance",
-    ]
+    if len(selected_months) == 1:
+        single_month = selected_months[0]
+        single_df = period_df[period_df["月份"] == single_month].copy()
+        single_start, single_end = display_range_for_month(single_month)
+        single_df["日期"] = f"{single_start.strftime('%Y/%m/%d')} - {single_end.strftime('%Y/%m/%d')}"
 
-    edited = st.data_editor(
-        month_df[edit_cols],
-        use_container_width=True,
-        hide_index=True,
-        height=620,
-        disabled=[
-            "日期",
-            "料件名稱",
-            "料號",
-            "THD",
-            "VC",
-            "SC",
-            "DF",
-            "other",
+        visible_cols = ["日期", "負責人", "料件名稱", "料號", "Total"]
+
+        if st.session_state["forecast_show_channels"]:
+            visible_cols += CHANNELS
+
+        visible_cols += [
             "AI預測該月剩餘需求",
+            "採購人員預測該月剩餘需求",
             "實際銷售數據",
             "Variance",
-        ],
-        column_config={
-            "採購人員預測該月剩餘需求": st.column_config.NumberColumn(
-                "採購人員預測該月剩餘需求",
-                min_value=0,
-                step=10,
-                help="採購可自行修正本月剩餘需求預測",
-            ),
-            "Variance": st.column_config.NumberColumn(
-                "Variance",
-                format="%.2f",
-                help="實際銷售數據 / 採購人員預測該月剩餘需求 - 1",
-            ),
-        },
-        key=f"forecast_editor_{selected_month}",
-    )
+        ]
 
-    update_map = edited.set_index("料號")["採購人員預測該月剩餘需求"].to_dict()
-    mask = st.session_state["forecast_editor_df"]["月份"] == selected_month
+        editor_df = single_df[visible_cols].copy()
+        editor_df["Variance"] = editor_df["Variance"] * 100
 
-    st.session_state["forecast_editor_df"].loc[
-        mask, "採購人員預測該月剩餘需求"
-    ] = st.session_state["forecast_editor_df"].loc[mask, "料號"].map(update_map)
+        edited = st.data_editor(
+            editor_df,
+            use_container_width=True,
+            hide_index=True,
+            height=620,
+            disabled=[
+                col
+                for col in visible_cols
+                if col != "採購人員預測該月剩餘需求"
+            ],
+            column_config={
+                "日期": st.column_config.TextColumn("日期", width="small"),
+                "負責人": st.column_config.TextColumn("負責人", width="small"),
+                "料件名稱": st.column_config.TextColumn("料件名稱", width="medium"),
+                "料號": st.column_config.TextColumn("料號", width="small"),
+                "Total": st.column_config.NumberColumn("Total", width="small", format="%d"),
+                "THD": st.column_config.NumberColumn("THD", width="small", format="%d"),
+                "VC": st.column_config.NumberColumn("VC", width="small", format="%d"),
+                "SC": st.column_config.NumberColumn("SC", width="small", format="%d"),
+                "DF": st.column_config.NumberColumn("DF", width="small", format="%d"),
+                "other": st.column_config.NumberColumn("other", width="small", format="%d"),
+                "AI預測該月剩餘需求": st.column_config.NumberColumn("AI", width="small", format="%d"),
+                "採購人員預測該月剩餘需求": st.column_config.NumberColumn(
+                    "採購",
+                    min_value=0,
+                    step=10,
+                    width="small",
+                    format="%d",
+                    help="採購可自行修正本月剩餘需求預測",
+                ),
+                "實際銷售數據": st.column_config.NumberColumn("實銷", width="small", format="%d"),
+                "Variance": st.column_config.NumberColumn(
+                    "Var",
+                    width="small",
+                    format="%.1f%%",
+                    help="實際銷售數據 / 採購人員預測該月剩餘需求 - 1",
+                ),
+            },
+            key=f"forecast_editor_single_{single_month}_{selected_owner}_{st.session_state['forecast_show_channels']}",
+        )
+
+        update_map = edited.set_index("料號")["採購人員預測該月剩餘需求"].to_dict()
+
+        mask = st.session_state["forecast_editor_df"]["月份"] == single_month
+        if selected_owner != "全部負責人":
+            mask = mask & (st.session_state["forecast_editor_df"]["負責人"] == selected_owner)
+
+        st.session_state["forecast_editor_df"].loc[
+            mask, "採購人員預測該月剩餘需求"
+        ] = st.session_state["forecast_editor_df"].loc[mask, "料號"].map(update_map)
+
+    else:
+        visible_items = period_df[["負責人", "料件名稱", "料號"]].drop_duplicates().copy()
+        wide_df = visible_items.copy()
+
+        column_config = {
+            "負責人": st.column_config.TextColumn("負責人", width="small"),
+            "料件名稱": st.column_config.TextColumn("料件名稱", width="medium"),
+            "料號": st.column_config.TextColumn("料號", width="small"),
+        }
+
+        disabled_cols = ["負責人", "料件名稱", "料號"]
+        buyer_cols = []
+
+        for month_idx, month_text in enumerate(selected_months):
+            month_tmp = period_df[period_df["月份"] == month_text].copy()
+
+            month_tmp = month_tmp[
+                [
+                    "料號",
+                    "Total",
+                    "THD",
+                    "VC",
+                    "SC",
+                    "DF",
+                    "other",
+                    "AI預測該月剩餘需求",
+                    "採購人員預測該月剩餘需求",
+                    "實際銷售數據",
+                    "Variance",
+                ]
+            ].copy()
+
+            month_label = month_short_label(month_text)
+            color_mark = MONTH_COLOR_MARKS[month_idx % len(MONTH_COLOR_MARKS)]
+
+            rename_map = {
+                "Total": f"{color_mark}{month_label}Total",
+                "THD": f"{color_mark}{month_label}THD",
+                "VC": f"{color_mark}{month_label}VC",
+                "SC": f"{color_mark}{month_label}SC",
+                "DF": f"{color_mark}{month_label}DF",
+                "other": f"{color_mark}{month_label}other",
+                "AI預測該月剩餘需求": f"{color_mark}{month_label}AI",
+                "採購人員預測該月剩餘需求": f"{color_mark}{month_label}採購",
+                "實際銷售數據": f"{color_mark}{month_label}實銷",
+                "Variance": f"{color_mark}{month_label}Var",
+            }
+
+            month_tmp = month_tmp.rename(columns=rename_map)
+            month_tmp[f"{color_mark}{month_label}Var"] = month_tmp[f"{color_mark}{month_label}Var"] * 100
+
+            merge_cols = ["料號", f"{color_mark}{month_label}Total"]
+
+            if st.session_state["forecast_show_channels"]:
+                merge_cols += [
+                    f"{color_mark}{month_label}THD",
+                    f"{color_mark}{month_label}VC",
+                    f"{color_mark}{month_label}SC",
+                    f"{color_mark}{month_label}DF",
+                    f"{color_mark}{month_label}other",
+                ]
+
+            merge_cols += [
+                f"{color_mark}{month_label}AI",
+                f"{color_mark}{month_label}採購",
+                f"{color_mark}{month_label}實銷",
+                f"{color_mark}{month_label}Var",
+            ]
+
+            wide_df = wide_df.merge(month_tmp[merge_cols], on="料號", how="left")
+
+            numeric_cols = merge_cols[1:]
+            buyer_col = f"{color_mark}{month_label}採購"
+            buyer_cols.append((month_text, buyer_col))
+
+            for col in numeric_cols:
+                if col.endswith("Var"):
+                    column_config[col] = st.column_config.NumberColumn(
+                        col,
+                        width="small",
+                        format="%.1f%%",
+                    )
+                elif col == buyer_col:
+                    column_config[col] = st.column_config.NumberColumn(
+                        col,
+                        min_value=0,
+                        step=10,
+                        width="small",
+                        format="%d",
+                        help="採購可自行修正該月份剩餘需求預測",
+                    )
+                else:
+                    column_config[col] = st.column_config.NumberColumn(
+                        col,
+                        width="small",
+                        format="%d",
+                    )
+
+            disabled_cols += [col for col in numeric_cols if col != buyer_col]
+
+        edited = st.data_editor(
+            wide_df,
+            use_container_width=True,
+            hide_index=True,
+            height=620,
+            disabled=disabled_cols,
+            column_config=column_config,
+            key=f"forecast_editor_multi_{selected_period}_{selected_owner}_{st.session_state['forecast_show_channels']}",
+        )
+
+        for month_text, buyer_col in buyer_cols:
+            update_map = edited.set_index("料號")[buyer_col].to_dict()
+
+            mask = st.session_state["forecast_editor_df"]["月份"] == month_text
+            if selected_owner != "全部負責人":
+                mask = mask & (st.session_state["forecast_editor_df"]["負責人"] == selected_owner)
+
+            st.session_state["forecast_editor_df"].loc[
+                mask, "採購人員預測該月剩餘需求"
+            ] = st.session_state["forecast_editor_df"].loc[mask, "料號"].map(update_map)
 
     st.session_state["forecast_editor_df"]["Variance"] = (
         st.session_state["forecast_editor_df"]["實際銷售數據"]
@@ -553,42 +798,95 @@ if page == "① 需求預測":
     )
 
     st.write("")
-    chart_df = st.session_state["forecast_editor_df"]
-    chart_df = chart_df[chart_df["月份"] == selected_month].copy()
-    chart_df["Variance"] = chart_df["實際銷售數據"] / chart_df["採購人員預測該月剩餘需求"] - 1
+
+    chart_df = st.session_state["forecast_editor_df"].copy()
+    chart_df = chart_df[chart_df["月份"].isin(selected_months)].copy()
+
+    if selected_owner != "全部負責人":
+        chart_df = chart_df[chart_df["負責人"] == selected_owner].copy()
+
+    chart_df["Variance"] = (
+        chart_df["實際銷售數據"] / chart_df["採購人員預測該月剩餘需求"] - 1
+    )
 
     left, right = st.columns([1.1, 0.9])
 
-    with left:
-        fig = px.bar(
-            chart_df,
-            x="料號",
-            y=["AI預測該月剩餘需求", "採購人員預測該月剩餘需求", "實際銷售數據"],
-            barmode="group",
-            title="AI 預測 vs 採購預測 vs 實際銷售",
-        )
-        fig.update_layout(
-            height=430,
-            legend_title_text="指標",
-            plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)",
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    if len(selected_months) == 1:
+        with left:
+            fig = px.bar(
+                chart_df,
+                x="料號",
+                y=["AI預測該月剩餘需求", "採購人員預測該月剩餘需求", "實際銷售數據"],
+                barmode="group",
+                title="AI 預測 vs 採購預測 vs 實際銷售",
+            )
+            fig.update_layout(
+                height=430,
+                legend_title_text="指標",
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-    with right:
-        fig2 = px.bar(
-            chart_df,
-            x="料號",
-            y="Variance",
-            title="Variance 差異監控",
+        with right:
+            fig2 = px.bar(
+                chart_df,
+                x="料號",
+                y="Variance",
+                title="Variance 差異監控",
+            )
+            fig2.update_layout(
+                height=430,
+                yaxis_tickformat=".0%",
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+
+    else:
+        month_summary = (
+            chart_df.groupby("月份", as_index=False)
+            .agg(
+                AI預測該月剩餘需求=("AI預測該月剩餘需求", "sum"),
+                採購人員預測該月剩餘需求=("採購人員預測該月剩餘需求", "sum"),
+                實際銷售數據=("實際銷售數據", "sum"),
+            )
         )
-        fig2.update_layout(
-            height=430,
-            yaxis_tickformat=".0%",
-            plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)",
+        month_summary["月份顯示"] = month_summary["月份"].apply(month_short_label)
+        month_summary["Variance"] = (
+            month_summary["實際銷售數據"] / month_summary["採購人員預測該月剩餘需求"] - 1
         )
-        st.plotly_chart(fig2, use_container_width=True)
+
+        with left:
+            fig = px.bar(
+                month_summary,
+                x="月份顯示",
+                y=["AI預測該月剩餘需求", "採購人員預測該月剩餘需求", "實際銷售數據"],
+                barmode="group",
+                title=f"{period_label}｜AI 預測 vs 採購預測 vs 實際銷售",
+            )
+            fig.update_layout(
+                height=430,
+                legend_title_text="指標",
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        with right:
+            fig2 = px.bar(
+                month_summary,
+                x="月份顯示",
+                y="Variance",
+                title=f"{period_label}｜Variance 差異監控",
+            )
+            fig2.update_layout(
+                height=430,
+                yaxis_tickformat=".0%",
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig2, use_container_width=True)
 
 # =========================================================
 # Page 2 Planning
