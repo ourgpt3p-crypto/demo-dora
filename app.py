@@ -203,53 +203,6 @@ def month_short_label(month_text: str):
 MONTH_COLOR_MARKS = ["🟦", "🟩", "🟨", "🟧", "🟪", "🟫", "⬛", "🟥", "🟦", "🟩", "🟨", "🟧"]
 
 
-@st.cache_data
-def create_forecast_data():
-    rows = []
-    options = month_options(date(2026, 6, 1), 12)
-
-    item_owner_map = {
-        item["料號"]: RESPONSIBLES[idx % len(RESPONSIBLES)]
-        for idx, item in enumerate(ITEMS)
-    }
-
-    for month_text in options:
-        start, end = month_start_end(month_text)
-
-        for idx, item in enumerate(ITEMS):
-            base = np.random.randint(120, 950)
-            season_factor = 1 + (options.index(month_text) * 0.025)
-            channel_qty = {
-                ch: int(max(0, np.random.normal(base / 5 * season_factor, base * 0.04)))
-                for ch in CHANNELS
-            }
-
-            monthly_ai = int(sum(channel_qty.values()) * np.random.uniform(0.85, 1.15))
-            monthly_buyer = int(monthly_ai * np.random.uniform(0.88, 1.18))
-            monthly_actual = int(monthly_buyer * np.random.uniform(0.8, 1.28))
-
-            rows.append(
-                {
-                    "月份": month_text,
-                    "日期": f"{start.strftime('%Y/%m/%d')} - {end.strftime('%Y/%m/%d')}",
-                    "負責人": item_owner_map[item["料號"]],
-                    "料件名稱": item["料件名稱"],
-                    "料號": item["料號"],
-                    "THD": channel_qty["THD"],
-                    "VC": channel_qty["VC"],
-                    "SC": channel_qty["SC"],
-                    "DF": channel_qty["DF"],
-                    "other": channel_qty["other"],
-                    "AI預測該月剩餘需求": monthly_ai,
-                    "採購人員預測該月剩餘需求": monthly_buyer,
-                    "實際銷售數據": monthly_actual,
-                }
-            )
-
-    df = pd.DataFrame(rows)
-    df["Variance"] = df["實際銷售數據"] / df["採購人員預測該月剩餘需求"] - 1
-    return df
-
 def month_options(start_month: date, months: int = 12):
     result = []
     y = start_month.year
@@ -347,29 +300,65 @@ BOM_MAP = {
 
 
 @st.cache_data
-def create_planning_data():
+def create_item_stock_data():
+    """每個料號、每個月份的庫存與 Forecast 資料，只產生一次，
+    避免同一個料號在不同 BOM 配對裡因重複隨機產生而數字不一致。"""
     rows = []
     options = month_options(date(2026, 6, 1), 12)
 
     for month_text in options:
         for item in ITEMS:
+            qb = int(np.random.randint(0, 350))
+            fba = int(np.random.randint(0, 220))
+            vc_sellable = int(np.random.randint(0, 260))
+            vc_transit = int(np.random.randint(0, 180))
+            vc_di = int(np.random.randint(0, 120))
+            purchase_not_water = int(np.random.randint(0, 260))
+            forecast = int(np.random.randint(80, 720))
+            actual = int(forecast * np.random.uniform(0.72, 1.32))
+
+            total_stock = qb + fba + vc_sellable + vc_transit + vc_di
+            qty_on_hand = total_stock + purchase_not_water - forecast
+            param_forecast = forecast * 3
+            stock_status = qty_on_hand - param_forecast
+
+            rows.append(
+                {
+                    "年月": month_text,
+                    "料號": item["料號"],
+                    "料件名稱": item["料件名稱"],
+                    "總庫存數": total_stock,
+                    "QB All QOH": qb,
+                    "FBA Total Units": fba,
+                    "VC Sellable On Hand Units": vc_sellable,
+                    "VC Inbound or Vendor in transit": vc_transit,
+                    "VC Inbound -DI": vc_di,
+                    "Purchase Not On Water": purchase_not_water,
+                    "Forecast": forecast,
+                    "實際銷售數據": actual,
+                    "QTY on hand": qty_on_hand,
+                    "參數* forecast": param_forecast,
+                    "stock status on the end -公式": stock_status,
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+@st.cache_data
+def create_planning_data():
+    item_stock_df = create_item_stock_data()
+    rows = []
+    options = month_options(date(2026, 6, 1), 12)
+
+    for month_text in options:
+        month_stock = item_stock_df[item_stock_df["年月"] == month_text].set_index("料號")
+
+        for item in ITEMS:
             children = BOM_MAP.get(item["料號"], [{"子件": "-", "component QTY": 1}])
+            item_row = month_stock.loc[item["料號"]]
 
             for child in children:
-                qb = int(np.random.randint(0, 350))
-                fba = int(np.random.randint(0, 220))
-                vc_sellable = int(np.random.randint(0, 260))
-                vc_transit = int(np.random.randint(0, 180))
-                vc_di = int(np.random.randint(0, 120))
-                purchase_not_water = int(np.random.randint(0, 260))
-                forecast = int(np.random.randint(80, 720))
-                actual = int(forecast * np.random.uniform(0.72, 1.32))
-
-                total_stock = qb + fba + vc_sellable + vc_transit + vc_di
-                qty_on_hand = total_stock + purchase_not_water - forecast
-                param_forecast = forecast * 3
-                stock_status = qty_on_hand - param_forecast
-
                 rows.append(
                     {
                         "年月": month_text,
@@ -377,18 +366,18 @@ def create_planning_data():
                         "料號": item["料號"],
                         "子件": child["子件"],
                         "component QTY": child["component QTY"],
-                        "總庫存數": total_stock,
-                        "QB All QOH": qb,
-                        "FBA Total Units": fba,
-                        "VC Sellable On Hand Units": vc_sellable,
-                        "VC Inbound or Vendor in transit": vc_transit,
-                        "VC Inbound -DI": vc_di,
-                        "Purchase Not On Water": purchase_not_water,
-                        "Forecast": forecast,
-                        "實際銷售數據": actual,
-                        "QTY on hand": qty_on_hand,
-                        "參數* forecast": param_forecast,
-                        "stock status on the end -公式": stock_status,
+                        "總庫存數": item_row["總庫存數"],
+                        "QB All QOH": item_row["QB All QOH"],
+                        "FBA Total Units": item_row["FBA Total Units"],
+                        "VC Sellable On Hand Units": item_row["VC Sellable On Hand Units"],
+                        "VC Inbound or Vendor in transit": item_row["VC Inbound or Vendor in transit"],
+                        "VC Inbound -DI": item_row["VC Inbound -DI"],
+                        "Purchase Not On Water": item_row["Purchase Not On Water"],
+                        "Forecast": item_row["Forecast"],
+                        "實際銷售數據": item_row["實際銷售數據"],
+                        "QTY on hand": item_row["QTY on hand"],
+                        "參數* forecast": item_row["參數* forecast"],
+                        "stock status on the end -公式": item_row["stock status on the end -公式"],
                     }
                 )
 
@@ -406,8 +395,8 @@ def create_planning_data():
     df["被上層料件使用需求"] = df["被上層料件使用需求"].fillna(0).astype(int)
     return df
 
-
 forecast_df = create_forecast_data()
+item_stock_df = create_item_stock_data()
 planning_df = create_planning_data()
 
 if "forecast_editor_df" not in st.session_state:
@@ -1063,25 +1052,51 @@ elif page == "② 採購 Planning":
     st.markdown(
         """
         <div class="info-box">
-            若某料號同時也是其他料件的子件，系統會依照「父料件 Forecast × component QTY」統計該子件被使用的總需求。
+            若某料號同時也是其他料件的子件，系統會依照「父料件 Forecast × component QTY」統計該子件被使用的總需求，
+            並同步列出該子件本身的庫存與 Forecast 數據，方便判斷是否需要補貨。
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    child_summary = (
+    child_demand = (
         month_plan[month_plan["子件"] != "-"]
         .assign(子件需求=lambda x: x["Forecast"] * x["component QTY"])
-        .groupby(["子件"], as_index=False)["子件需求"]
+        .groupby("子件", as_index=False)["子件需求"]
         .sum()
-        .sort_values("子件需求", ascending=False)
+        .rename(columns={"子件": "料號"})
     )
 
+    month_item_stock = item_stock_df[item_stock_df["年月"] == selected_month]
+
+    child_summary = child_demand.merge(month_item_stock, on="料號", how="left")
+    child_summary = child_summary.rename(columns={"料號": "子件"})
+    child_summary["子件本身庫存狀態"] = np.where(
+        child_summary["stock status on the end -公式"] < 0, "低於安全水位", "正常"
+    )
+
+    child_display_cols = [
+        "子件", "料件名稱", "子件需求",
+        "總庫存數", "QB All QOH", "FBA Total Units",
+        "VC Sellable On Hand Units", "VC Inbound or Vendor in transit", "VC Inbound -DI",
+        "Purchase Not On Water", "Forecast", "實際銷售數據",
+        "QTY on hand", "參數* forecast", "stock status on the end -公式",
+        "子件本身庫存狀態",
+    ]
+
     st.dataframe(
-        child_summary,
+        child_summary[child_display_cols].sort_values("子件需求", ascending=False),
         use_container_width=True,
         hide_index=True,
-        height=300,
+        height=400,
+        column_config={
+            "子件需求": st.column_config.NumberColumn(
+                "子件需求", help="父料件 Forecast × component QTY 加總",
+            ),
+            "stock status on the end -公式": st.column_config.NumberColumn(
+                "stock status on the end -公式", help="QTY on hand - 參數* forecast",
+            ),
+        },
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
